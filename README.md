@@ -1,4 +1,4 @@
-# Projecto Final
+# Proyecto Final
 
 ## Instalar requirements de python en su entorno local de anaconda.
 
