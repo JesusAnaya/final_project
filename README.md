@@ -26,6 +26,6 @@ pip install -r requirements.txt
 
 Dentro de la carpeta proyecto_final se encuentran el archivo Python que se debe ejecutar.
 
-Dentro de la carpeta Webots se encuentra el archivo `city_2023b-1.wbt`. Este es el archivo de mundo de webots modificado para esta tarea de captura de datos. Favor de cargar este archivo.
+Dentro de la carpeta `MR4010_Proyecto_Final_2025` se encuentra el archivo `worlds/city_traffic_2025_01.wbt`. Este es el archivo de mundo de webots modificado para esta tarea de captura de datos. Favor de cargar este archivo.
 
-Recuerden ejecutar el archivo vehicle_controlle.py desde el entorno de Anaconda que habían configurado en la primera práctica de webots.
+Recuerden ejecutar el archivo `vehicle_controlle.py` desde el entorno de Anaconda que habían configurado en la primera práctica de webots.
