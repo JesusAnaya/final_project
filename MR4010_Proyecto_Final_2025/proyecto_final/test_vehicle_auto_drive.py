@@ -12,7 +12,7 @@ import csv
 import numpy as np
 
 
-MODEL_PATH_NVIDIA = "./models/best_model_cpu_v6.h5"
+MODEL_PATH_NVIDIA = "./models/best_model_cpu_v7.h5"
 MODEL_PATH_VGG16 = "./models/best_model_vgg_cpu.h5"
 MODEL_TO_USE = "nvidia"
 
@@ -105,6 +105,9 @@ space_pressed = False
 up_down_pressed = False
 steering_angle = 0.0
 
+# Add this at the top with other global variables
+last_prediction_time = 0
+PREDICTION_INTERVAL = 0.2  # 200ms interval between predictions
 
 # set target speed
 def set_speed(offset_speed):
@@ -189,11 +192,16 @@ def steering_angle_median(angle, buffer_size=10):
 
 
 def perform_auto_driving(camera):
-    global is_auto_driving, target_steering
+    global is_auto_driving, target_steering, last_prediction_time
 
     if not is_auto_driving:
         return
     
+    # Check if enough time has passed since last prediction
+    current_time = time.time()
+    if current_time - last_prediction_time < PREDICTION_INTERVAL:
+        return
+        
     # Get image from camera
     image = get_image(camera)
     
@@ -212,6 +220,9 @@ def perform_auto_driving(camera):
     print(f"Predicted angle: {angle:.9f} rad")
     
     target_steering = np.clip(angle, -MAX_STEERING_ANGLE, MAX_STEERING_ANGLE)
+    
+    # Update last prediction time
+    last_prediction_time = current_time
 
 
 def handle_steering_keys(key, keyboard):
@@ -237,6 +248,9 @@ def handle_steering_keys(key, keyboard):
 # main
 def main():
     global recording_name, up_down_pressed, space_pressed, is_auto_driving
+
+    # check cuda compatible with tensorflow
+    print(tf.config.list_physical_devices('GPU'))
 
     # Create the Robot instance.
     robot = Car()

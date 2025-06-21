@@ -92,7 +92,7 @@ def change_steer_angle(inc):
     if new_manual_steering <= 25.0 and new_manual_steering >= -25.0: 
         manual_steering = new_manual_steering
         # Round to ensure we get exact multiples of 0.02
-        set_steering_angle(round(manual_steering * 0.02, 2))
+        set_steering_angle(round(manual_steering * 0.01, 4))
     # Debugging
     if manual_steering == 0:
         print("going straight")
