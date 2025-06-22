@@ -12,9 +12,8 @@ import csv
 import numpy as np
 
 
-MODEL_PATH_NVIDIA = "./models/best_model_cpu_v7.h5"
-MODEL_PATH_VGG16 = "./models/best_model_vgg_cpu.h5"
-MODEL_TO_USE = "nvidia"
+MODEL_PATH_NVIDIA = "./models/best_model_cpu_v8.h5"
+keras_model = load_model(MODEL_PATH_NVIDIA)
 
 
 # Capa para redimensionar y rellenar imágenes
@@ -50,15 +49,6 @@ class PadAndResize(layers.Layer):
         })
         return config
 
-if MODEL_TO_USE == "vgg16":
-    # add class PadAndResize to the model
-    with tf.keras.utils.custom_object_scope({'PadAndResize': PadAndResize}):
-        keras_model = load_model(MODEL_PATH_VGG16)
-elif MODEL_TO_USE == "nvidia":
-    keras_model = load_model(MODEL_PATH_NVIDIA)
-else:
-    print("Model not found")
-    exit()
 
 #Getting image from camera
 def get_image(camera):
