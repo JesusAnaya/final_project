@@ -100,20 +100,105 @@ last_prediction_time = 0
 PREDICTION_INTERVAL = 0.2  # 200ms interval between predictions
 
 # Object detection constants
-RADAR_MIN_RANGE = 2.5  # meters (radar specs)
-RADAR_MAX_RANGE = 30.0  # meters
-EMERGENCY_RANGE = 5.0  # meters (stop when object is 5m or less)
-MID_RANGE = 10.0  # meters (slow down when object is between 5m and 10m)
+RADAR_MIN_RANGE = 2.5  # minimos rango de metros para el radar
+RADAR_MAX_RANGE = 30.0  # maximo rango de metros para el radar
+EMERGENCY_RANGE = 8.0  # metros de proximidad para detenerse
+MID_RANGE = 12.0  # metros en los que se reduce la velocidad
+
+# Sensor configuration constants
+FRONT_ANGLE_THRESHOLD = np.pi/2  # 90 degrees - wider detection angle for better corner detection
 
 # Speed settings
 EMERGENCY_SPEED = 0.0  # km/h (complete stop)
-MEDIUM_SPEED = 10.0  # km/h (slow speed when object is at medium range)
-NORMAL_SPEED = 20.0  # km/h (normal cruising speed)
-MAX_SPEED = 40.0  # km/h
+MEDIUM_SPEED = 5.0  # km/h (slow speed when object is at medium range)
+NORMAL_SPEED = 15.0  # km/h (normal cruising speed)
+MAX_SPEED = 40.0  # km/h 
 
-# Sensor configuration constants
-FRONT_ANGLE_THRESHOLD = np.pi/4  # 45 degrees
-LIDAR_MIN_RANGE = 0.2  # meters
+# Brake timer settings
+BRAKE_RELEASE_TIME = 3.0  # seconds to maintain brake after obstacle is clear
+SPEED_CHANGE_TIME = 1.5  # seconds to maintain reduced speed after warning
+last_brake_time = 0  # track when brake was last applied
+last_warning_time = 0  # track when warning speed was last applied
+is_braking = False  # track if we are currently braking
+is_warning = False  # track if we are in warning speed state
+
+monitor_radar_min_dist = 0.0
+monitor_radar_position = "none"  # To track which radar detected the closest object
+
+
+def process_radar_data(radar):
+    """Process data from a single radar and return the minimum valid distance."""
+    radar_dists = []
+    radar_targets = radar.getTargets()
+    
+    for target in radar_targets:
+        # Skip any readings that are exactly 1.00m as they're likely false positives
+        if abs(target.distance - 1.00) < 0.01:
+            continue
+            
+        horizontal_angle = target.azimuth
+            
+        # Only consider targets within horizontal cone and valid range
+        if (abs(horizontal_angle) <= FRONT_ANGLE_THRESHOLD and
+            RADAR_MIN_RANGE <= target.distance <= RADAR_MAX_RANGE):
+            radar_dists.append(target.distance)
+    
+    return min(radar_dists) if radar_dists else float('inf')
+
+
+def combined_radar_control(radar_center, radar_left, radar_right, current_speed, driver):
+    global monitor_radar_min_dist, monitor_radar_position, last_brake_time, last_warning_time, is_braking, is_warning
+    current_time = time.time()
+    
+    # Get minimum distance from each radar
+    center_dist = process_radar_data(radar_center)
+    left_dist = process_radar_data(radar_left)
+    right_dist = process_radar_data(radar_right)
+    
+    # Find the closest detection and which radar detected it
+    radar_distances = {
+        "center": center_dist,
+        "left": left_dist,
+        "right": right_dist
+    }
+    
+    min_dist = min(radar_distances.values())
+    monitor_radar_min_dist = min_dist
+    monitor_radar_position = min(radar_distances.items(), key=lambda x: x[1])[0]
+
+    # Check if we need to start braking
+    if min_dist <= EMERGENCY_RANGE:
+        print(f"🚨 Emergency stop - object at {min_dist:.1f}m detected by {monitor_radar_position} radar")
+        driver.setThrottle(0.0)
+        driver.setBrakeIntensity(EMERGENCY_BRAKE_INTENSITY)
+        last_brake_time = current_time
+        is_braking = True
+        is_warning = False  # Reset warning state when in emergency
+        return EMERGENCY_SPEED
+    
+    elif EMERGENCY_RANGE < min_dist <= MID_RANGE:
+        print(f"⚠️ Reducing speed - object at {min_dist:.1f}m detected by {monitor_radar_position} radar")
+        driver.setBrakeIntensity(MEDIUM_BRAKE_INTENSITY)
+        driver.setThrottle(MEDIUM_THROTTLE)
+        last_warning_time = current_time
+        is_warning = True
+        is_braking = False  # Reset emergency state when in warning
+        return MEDIUM_SPEED
+    
+    # Check timers for both states
+    if is_braking and (current_time - last_brake_time) < BRAKE_RELEASE_TIME:
+        # Maintain emergency brake state
+        return current_speed
+    elif is_warning and (current_time - last_warning_time) < SPEED_CHANGE_TIME:
+        # Maintain warning speed state
+        return MEDIUM_SPEED
+    
+    # If we get here, either no obstacle or all timers expired
+    is_braking = False
+    is_warning = False
+    driver.setBrakeIntensity(0.0)
+    driver.setThrottle(NORMAL_THROTTLE)
+    return NORMAL_SPEED
 
 # Control parameters
 EMERGENCY_BRAKE_INTENSITY = 1.0
@@ -257,100 +342,6 @@ def handle_steering_keys(key, keyboard):
         print(f"Steering right: {target_steering:.2f} rad")
 
 
-def combined_lidar_radar_control(lidar, radar, current_speed, driver):
-    # Get LIDAR data and apply filters
-    lidar_ranges = lidar.getRangeImage()
-    lidar_fov = lidar.getFov()  # Field of view in radians
-    num_points = len(lidar_ranges)
-    
-    # Calculate angles for each point in the lidar scan
-    angle_step = lidar_fov / num_points
-    angles = np.array([i * angle_step - lidar_fov/2 for i in range(num_points)])
-    
-    # Filter for points in front of the car
-    front_indices = np.where(np.abs(angles) <= FRONT_ANGLE_THRESHOLD)[0]
-    
-    # Debug information about LIDAR data
-    print(f"\n=== LIDAR Debug Info ===")
-    print(f"LIDAR FOV: {np.degrees(lidar_fov):.1f}°")
-    print(f"Number of LIDAR points: {num_points}")
-    print(f"Points in front cone: {len(front_indices)}")
-    
-    # Get ranges only in front cone and remove invalid readings
-    front_ranges = []
-    for idx in front_indices:
-        range_val = lidar_ranges[idx]
-        # Only consider finite readings within valid range
-        if range_val != float('inf') and LIDAR_MIN_RANGE <= range_val <= RADAR_MAX_RANGE:
-            front_ranges.append(range_val)
-    
-    # Print detailed LIDAR range information
-    if front_ranges:
-        print(f"Valid LIDAR readings: {len(front_ranges)} points")
-        print(f"LIDAR ranges: {min(front_ranges):.2f}m to {max(front_ranges):.2f}m")
-        # Print the 5 closest readings
-        sorted_ranges = sorted(front_ranges)[:5]
-        print(f"5 closest LIDAR points: {[f'{x:.2f}m' for x in sorted_ranges]}")
-    else:
-        print("No valid LIDAR readings in front cone")
-    
-    # Get minimum distance from filtered LIDAR data
-    lidar_min_dist = min(front_ranges) if front_ranges else float('inf')
-
-    # Get RADAR data and filter for frontal targets
-    print(f"\n=== RADAR Debug Info ===")
-    radar_targets = radar.getTargets()
-    print(f"Total radar targets: {len(radar_targets)}")
-    
-    radar_dists = []
-    for target in radar_targets:
-        # Print each target's information
-        print(f"Target: distance={target.distance:.2f}m, azimuth={np.degrees(target.azimuth):.1f}°")
-        
-        # Filter out likely false positives (exactly 1.00m is suspicious)
-        if abs(target.distance - 1.00) < 0.01:
-            print("Ignoring suspicious radar target at exactly 1.00m")
-            continue
-            
-        # Only consider targets within the front cone and valid range
-        if (abs(target.azimuth) <= FRONT_ANGLE_THRESHOLD and 
-            RADAR_MIN_RANGE <= target.distance <= RADAR_MAX_RANGE):
-            radar_dists.append(target.distance)
-    
-    if radar_dists:
-        print(f"Valid radar targets: {len(radar_dists)}")
-        print(f"Radar ranges: {min(radar_dists):.2f}m to {max(radar_dists):.2f}m")
-    else:
-        print("No valid radar targets in front cone")
-    
-    radar_min_dist = min(radar_dists) if radar_dists else float('inf')
-
-    # Report the closest object
-    min_dist = min(lidar_min_dist, radar_min_dist)
-    print(f"\n📏 Closest object: LIDAR={lidar_min_dist:.2f}m, RADAR={radar_min_dist:.2f}m")
-
-    # 🚨 Emergency: object is 5m or less
-    if min_dist <= EMERGENCY_RANGE:
-        # Additional validation for very close objects
-        if min_dist == lidar_min_dist or len(radar_dists) > 0:  # Trust LIDAR or verified radar
-            print(f"🟥 Emergency stop - object at {min_dist:.1f}m")
-            driver.setThrottle(0.0)
-            driver.setBrakeIntensity(EMERGENCY_BRAKE_INTENSITY)
-            return EMERGENCY_SPEED
-
-    # ⚠️ Object at medium distance (between 5m and 10m)
-    if EMERGENCY_RANGE < min_dist <= MID_RANGE:
-        print(f"⚠️ Object at medium range ({min_dist:.1f}m) - reducing speed to {MEDIUM_SPEED}km/h")
-        driver.setBrakeIntensity(MEDIUM_BRAKE_INTENSITY)
-        driver.setThrottle(MEDIUM_THROTTLE)
-        return MEDIUM_SPEED
-
-    # 🟢 Path is clear (object is more than 10m away or no object detected)
-    print("🟢 Path clear - proceeding at normal speed")
-    driver.setBrakeIntensity(0.0)
-    driver.setThrottle(NORMAL_THROTTLE)
-    return NORMAL_SPEED
-
 # main
 def main():
     global recording_name, up_down_pressed, space_pressed, is_auto_driving
@@ -371,23 +362,19 @@ def main():
     print("obtuvimos el timestep")
 
     # Create cameras instances
-
-    # Center camera
-    # Note: The camera is enabled with the timestep to ensure it captures images at the correct rate.
-    # The camera's resolution is set to 640x480.
-    # The camera's field of view is set to 90 degrees.
-    # The camera's position is set to the center of the vehicle.
-    # The camera's orientation is set to look forward.
-    # The camera's name is "camera_center".
     camera = robot.getDevice("camera")
     print("obtuvimos la cámara")
     camera.enable(timestep)  # timestep
 
-    lidar = robot.getDevice("front_lidar")
-    lidar.enable(timestep)
-
+    # Get radar devices
     radar = robot.getDevice("front_radar")
     radar.enable(timestep)
+
+    radar_left = robot.getDevice("front_radar_left")
+    radar_left.enable(timestep)
+
+    radar_right = robot.getDevice("front_radar_right")
+    radar_right.enable(timestep)
 
     # processing display
     display_img = Display("display")
@@ -436,19 +423,35 @@ def main():
             # Handle steering with new key press detection
             handle_steering_keys(key, keyboard)
             
-        # Update steering with smoothing
+        # Actualiza el ángulo de la dirección del vehículo
         angle = update_steering()
             
-        #update angle and speed
+        # Actualiza el ángulo de la dirección del vehículo
         driver.setSteeringAngle(angle)
-        speed = combined_lidar_radar_control(lidar, radar, speed, driver)
+
+        # Obtiene la velocidad basado en las lecturas de los sensores
+        speed = combined_radar_control(radar, radar_left, radar_right, speed, driver)
+
+        # Actualiza la velocidad del vehículo
         driver.setCruisingSpeed(speed)
+
+        # Realiza la predicción de la dirección del vehículo
         perform_auto_driving(camera)
 
-        # display steering angle in the top left corner
-        # using the display of the supervisor
+        # Mostramos algunos datos en la pantalla del supervisor
         sup.setLabel(
             0,
+            f"Closest object: {monitor_radar_min_dist:.2f}m ({monitor_radar_position} radar)",
+            0.05,    # x = 5% from left
+            0.80,    # y = 95% from bottom
+            0.05,    # text height = 5% of screen
+            0xFFFFFF,# white color
+            0.0,     # fully opaque
+            "Arial"  # font name
+        )
+
+        sup.setLabel(
+            1,
             f"Steering angle: {angle:.2f}",
             0.05,    # x = 5% from left
             0.85,    # y = 95% from bottom
@@ -458,10 +461,8 @@ def main():
             "Arial"  # font name
         )
 
-        # display steering angle in the top left corner
-        # using the display of the supervisor
         sup.setLabel(
-            1,
+            2,
             f"Speed: {speed} km/h",
             0.05,    # x = 5% from left
             0.90,    # y = 95% from bottom
@@ -473,10 +474,10 @@ def main():
 
         # display recording status below steering angle
         sup.setLabel(
-            2,  # different ID for second label
+            3,  # different ID for second label
             f"Auto Driving: {'ON' if is_auto_driving else 'OFF'}",
             0.05,    # x = 5% from left
-            0.95,    # y = 90% from bottom (above steering angle)
+            0.95,    # y = 90% from bottom
             0.05,    # text height = 5% of screen
             0xFFFFFF,# white color
             0.0,     # fully opaque
