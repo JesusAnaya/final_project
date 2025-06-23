@@ -13,7 +13,7 @@ import numpy as np
 
 
 MODEL_PATH_NVIDIA = "./models/best_model_cpu_v8.h5"
-keras_model = load_model(MODEL_PATH_NVIDIA)
+keras_model = load_model(MODEL_PATH_NVIDIA, compile=False)
 
 
 # Capa para redimensionar y rellenar imágenes
@@ -98,6 +98,28 @@ steering_angle = 0.0
 # Add this at the top with other global variables
 last_prediction_time = 0
 PREDICTION_INTERVAL = 0.2  # 200ms interval between predictions
+
+# Object detection constants
+RADAR_MIN_RANGE = 2.5  # meters (radar specs)
+RADAR_MAX_RANGE = 30.0  # meters
+EMERGENCY_RANGE = 5.0  # meters (stop when object is 5m or less)
+MID_RANGE = 10.0  # meters (slow down when object is between 5m and 10m)
+
+# Speed settings
+EMERGENCY_SPEED = 0.0  # km/h (complete stop)
+MEDIUM_SPEED = 10.0  # km/h (slow speed when object is at medium range)
+NORMAL_SPEED = 20.0  # km/h (normal cruising speed)
+MAX_SPEED = 40.0  # km/h
+
+# Sensor configuration constants
+FRONT_ANGLE_THRESHOLD = np.pi/4  # 45 degrees
+LIDAR_MIN_RANGE = 0.2  # meters
+
+# Control parameters
+EMERGENCY_BRAKE_INTENSITY = 1.0
+MEDIUM_BRAKE_INTENSITY = 0.4
+MEDIUM_THROTTLE = 0.3
+NORMAL_THROTTLE = 1.0
 
 # set target speed
 def set_speed(offset_speed):
@@ -235,20 +257,118 @@ def handle_steering_keys(key, keyboard):
         print(f"Steering right: {target_steering:.2f} rad")
 
 
+def combined_lidar_radar_control(lidar, radar, current_speed, driver):
+    # Get LIDAR data and apply filters
+    lidar_ranges = lidar.getRangeImage()
+    lidar_fov = lidar.getFov()  # Field of view in radians
+    num_points = len(lidar_ranges)
+    
+    # Calculate angles for each point in the lidar scan
+    angle_step = lidar_fov / num_points
+    angles = np.array([i * angle_step - lidar_fov/2 for i in range(num_points)])
+    
+    # Filter for points in front of the car
+    front_indices = np.where(np.abs(angles) <= FRONT_ANGLE_THRESHOLD)[0]
+    
+    # Debug information about LIDAR data
+    print(f"\n=== LIDAR Debug Info ===")
+    print(f"LIDAR FOV: {np.degrees(lidar_fov):.1f}°")
+    print(f"Number of LIDAR points: {num_points}")
+    print(f"Points in front cone: {len(front_indices)}")
+    
+    # Get ranges only in front cone and remove invalid readings
+    front_ranges = []
+    for idx in front_indices:
+        range_val = lidar_ranges[idx]
+        # Only consider finite readings within valid range
+        if range_val != float('inf') and LIDAR_MIN_RANGE <= range_val <= RADAR_MAX_RANGE:
+            front_ranges.append(range_val)
+    
+    # Print detailed LIDAR range information
+    if front_ranges:
+        print(f"Valid LIDAR readings: {len(front_ranges)} points")
+        print(f"LIDAR ranges: {min(front_ranges):.2f}m to {max(front_ranges):.2f}m")
+        # Print the 5 closest readings
+        sorted_ranges = sorted(front_ranges)[:5]
+        print(f"5 closest LIDAR points: {[f'{x:.2f}m' for x in sorted_ranges]}")
+    else:
+        print("No valid LIDAR readings in front cone")
+    
+    # Get minimum distance from filtered LIDAR data
+    lidar_min_dist = min(front_ranges) if front_ranges else float('inf')
+
+    # Get RADAR data and filter for frontal targets
+    print(f"\n=== RADAR Debug Info ===")
+    radar_targets = radar.getTargets()
+    print(f"Total radar targets: {len(radar_targets)}")
+    
+    radar_dists = []
+    for target in radar_targets:
+        # Print each target's information
+        print(f"Target: distance={target.distance:.2f}m, azimuth={np.degrees(target.azimuth):.1f}°")
+        
+        # Filter out likely false positives (exactly 1.00m is suspicious)
+        if abs(target.distance - 1.00) < 0.01:
+            print("Ignoring suspicious radar target at exactly 1.00m")
+            continue
+            
+        # Only consider targets within the front cone and valid range
+        if (abs(target.azimuth) <= FRONT_ANGLE_THRESHOLD and 
+            RADAR_MIN_RANGE <= target.distance <= RADAR_MAX_RANGE):
+            radar_dists.append(target.distance)
+    
+    if radar_dists:
+        print(f"Valid radar targets: {len(radar_dists)}")
+        print(f"Radar ranges: {min(radar_dists):.2f}m to {max(radar_dists):.2f}m")
+    else:
+        print("No valid radar targets in front cone")
+    
+    radar_min_dist = min(radar_dists) if radar_dists else float('inf')
+
+    # Report the closest object
+    min_dist = min(lidar_min_dist, radar_min_dist)
+    print(f"\n📏 Closest object: LIDAR={lidar_min_dist:.2f}m, RADAR={radar_min_dist:.2f}m")
+
+    # 🚨 Emergency: object is 5m or less
+    if min_dist <= EMERGENCY_RANGE:
+        # Additional validation for very close objects
+        if min_dist == lidar_min_dist or len(radar_dists) > 0:  # Trust LIDAR or verified radar
+            print(f"🟥 Emergency stop - object at {min_dist:.1f}m")
+            driver.setThrottle(0.0)
+            driver.setBrakeIntensity(EMERGENCY_BRAKE_INTENSITY)
+            return EMERGENCY_SPEED
+
+    # ⚠️ Object at medium distance (between 5m and 10m)
+    if EMERGENCY_RANGE < min_dist <= MID_RANGE:
+        print(f"⚠️ Object at medium range ({min_dist:.1f}m) - reducing speed to {MEDIUM_SPEED}km/h")
+        driver.setBrakeIntensity(MEDIUM_BRAKE_INTENSITY)
+        driver.setThrottle(MEDIUM_THROTTLE)
+        return MEDIUM_SPEED
+
+    # 🟢 Path is clear (object is more than 10m away or no object detected)
+    print("🟢 Path clear - proceeding at normal speed")
+    driver.setBrakeIntensity(0.0)
+    driver.setThrottle(NORMAL_THROTTLE)
+    return NORMAL_SPEED
+
 # main
 def main():
     global recording_name, up_down_pressed, space_pressed, is_auto_driving
 
     # check cuda compatible with tensorflow
     print(tf.config.list_physical_devices('GPU'))
+    speed = 15  # o el valor inicial que tenías definido
 
     # Create the Robot instance.
     robot = Car()
+    print("Robot conectado")
+
     driver = Driver()
     sup = Supervisor()
 
     # Get the time step of the current world.
     timestep = int(robot.getBasicTimeStep())
+    print("obtuvimos el timestep")
 
     # Create cameras instances
 
@@ -260,14 +380,23 @@ def main():
     # The camera's orientation is set to look forward.
     # The camera's name is "camera_center".
     camera = robot.getDevice("camera")
+    print("obtuvimos la cámara")
     camera.enable(timestep)  # timestep
+
+    lidar = robot.getDevice("front_lidar")
+    lidar.enable(timestep)
+
+    radar = robot.getDevice("front_radar")
+    radar.enable(timestep)
 
     # processing display
     display_img = Display("display")
+    print("display procesado")
 
     #create keyboard instance
     keyboard=Keyboard()
     keyboard.enable(timestep)
+    print("habilitado el teclado")
 
     while robot.step() != -1:
         # Get image from camera
@@ -312,8 +441,8 @@ def main():
             
         #update angle and speed
         driver.setSteeringAngle(angle)
+        speed = combined_lidar_radar_control(lidar, radar, speed, driver)
         driver.setCruisingSpeed(speed)
-
         perform_auto_driving(camera)
 
         # display steering angle in the top left corner
