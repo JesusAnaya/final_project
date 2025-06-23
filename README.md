@@ -9,6 +9,7 @@
 - [Entrenamiento del Modelo](#entrenamiento-del-modelo)
 - [Mundos de Simulación](#mundos-de-simulación)
 - [Configuración del Entorno](#configuración-del-entorno)
+- [Dataset en Kaggle](#dataset-en-kaggle)
 
 ## Descripción General
 Este repositorio contiene el proyecto final de conducción autónoma, que incluye controladores para la recolección de datos de entrenamiento y para la conducción autónoma utilizando un modelo de IA preentrenado. El proyecto implementa un sistema end-to-end de conducción autónoma, desde la recolección de datos hasta el despliegue del modelo.
@@ -125,3 +126,15 @@ pip install -r requirements.txt
 - **Espacio**: Activar/Desactivar grabación o conducción autónoma
 - **Flechas Arriba/Abajo**: Control de velocidad
 - **Flechas Izquierda/Derecha**: Control de dirección en modo manual
+
+## Dataset en Kaggle
+
+El dataset completo utilizado para el entrenamiento del modelo está disponible públicamente en Kaggle:
+
+[Dataset de Conducción Autónoma - Equipo 18 MNA](https://www.kaggle.com/datasets/armandoanayatec/webot-dataset-nvidia-mna-team-18/)
+
+Este dataset incluye:
+- Imágenes de las tres cámaras (central, izquierda, derecha)
+- Datos de dirección y control
+- Múltiples sesiones de conducción
+- Datos recolectados en diferentes escenarios
