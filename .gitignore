@@ -21,7 +21,6 @@ datasets/
 *.wbproj
 
 *.csv
-*.h5
 *.keras
 *.png
 *.jpg
